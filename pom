@@ -1,0 +1,282 @@
+#!/bin/sh
+
+POM_WORK_DURATION=${POM_WORK_DURATION:-$((25 * 60))}
+
+POM_SHORT_BREAK_DURATION=${POM_SHORT_BREAK_DURATION:-$((5 * 60))}
+
+POM_LONG_BREAK_DURATION=${POM_LONG_BREAK_DURATION:-$((30 * 60))}
+
+POM_LONG_BREAK_FREQUENCY=${POM_LONG_BREAK_FREQUENCY:-8}
+
+if [ "${POM_WORK_DURATION}" -le 0 ]; then
+    echo "error: WORK DURATION <= 0"
+    exit 1
+fi
+
+if [ "${POM_SHORT_BREAK_DURATION}" -le 0 ]; then
+    echo "error: SHORT BREAK DURATION <= 0"
+    exit 1
+fi
+
+if [ "${POM_LONG_BREAK_DURATION}" -le 0 ]; then
+    echo "error: LONG BREAK DURATION <= 0"
+    exit 1
+fi
+
+if [ "${POM_LONG_BREAK_FREQUENCY}" -le 0 ]; then
+    echo "error: LONG BREAK FREQUENCY <= 0"
+    exit 1
+fi
+
+if [ "${POM_WORK_DURATION}" -le "${POM_SHORT_BREAK_DURATION}" ]; then
+    echo "error: WORK DURATION <= SHORT BREAK DURATION"
+    exit 1
+fi
+
+if [ "${POM_LONG_BREAK_DURATION}" -le "${POM_SHORT_BREAK_DURATION}" ]; then
+    echo "error: LONG BREAK DURATION <= SHORT BREAK DURATION"
+    exit 1
+fi
+
+s_init() {
+    pom_state="init"
+    pom_count=0
+    pom_timer=0
+}
+
+s_advance_count() {
+    pom_count=$(("${pom_count}" + 1))
+}
+
+s_advance_timer() {
+    pom_timer=$(("${pom_timer}" - 1))
+}
+
+s_idle() {
+    pom_state="idle"
+    pom_timer=0
+}
+
+s_work_alarm() {
+    pom_state="work-alarm"
+    pom_timer=0
+}
+
+s_work() {
+    pom_state="work"
+    pom_timer="${POM_WORK_DURATION}"
+}
+
+s_short_break_alarm() {
+    pom_state="short-break-alarm"
+    pom_timer=0
+}
+
+s_short_break() {
+    pom_state="short-break"
+    pom_timer="${POM_SHORT_BREAK_DURATION}"
+}
+
+s_long_break_alarm() {
+    pom_state="long-break-alarm"
+    pom_timer=0
+}
+
+s_long_break() {
+    pom_state="long-break"
+    pom_timer="${POM_LONG_BREAK_DURATION}"
+}
+
+s_sigint() {
+    case "${pom_state}" in
+	"init"|"idle")
+	    if [ -f ~/.pom/on-quit.sh ]; then
+		. ~/.pom/on-quit.sh
+	    fi
+
+	    printf "\n\n"
+
+	    exit 0
+	    ;;
+
+	"work")
+	    if [ -f ~/.pom/on-kill.sh ]; then
+		. ~/.pom/on-kill.sh
+	    fi
+
+	    printf "\n\nPomodoro killed. One does not simply kill a pomodoro!\n\n"
+
+	    s_idle
+
+	    return 1
+	    ;;
+
+	*)
+	    printf "\n\n"
+
+	    s_idle
+
+	    return 1
+	    ;;
+    esac
+}
+
+trap s_sigint INT
+
+s_init
+
+while true; do
+    case "${pom_state}" in
+	"init")
+	    if [ -f ~/.pom/on-init.sh ]; then
+		. ~/.pom/on-init.sh
+	    fi
+
+	    printf "\033c"
+
+	    s_idle
+	    ;;
+
+	"idle")
+	    if [ -f ~/.pom/on-idle.sh ]; then
+		. ~/.pom/on-idle.sh
+	    fi
+
+	    printf "[ Press RETURN to continue . . . ]"
+
+	    read -r
+
+	    printf "\n"
+
+	    s_work_alarm
+	    ;;
+
+	"work-alarm")
+	    if [ -f ~/.pom/on-work-alarm.sh ]; then
+		. ~/.pom/on-work-alarm.sh
+	    fi
+
+	    s_work
+	    ;;
+
+	"work")
+	    if [ -f ~/.pom/on-work-begin.sh ]; then
+		. ~/.pom/on-work-begin.sh
+	    fi
+
+	    while [ $? -eq 0 ] && [ "${pom_timer}" -gt 0 ]; do
+		pom_timer_msg=$(date -d@"${pom_timer}" -u +%M:%S)
+		pom_state_msg="Work #$((pom_count + 1)) [${pom_timer_msg}]"
+
+		if [ -f ~/.pom/on-work.sh ]; then
+		    . ~/.pom/on-work.sh
+		fi
+
+		printf "%s\033[0K\r" "${pom_state_msg}"
+
+		s_advance_timer
+
+		sleep 1
+	    done
+
+	    if [ $? -eq 0 ]; then
+		s_advance_count
+
+		if [ -f ~/.pom/on-work-end.sh ]; then
+		    . ~/.pom/on-work-end.sh
+		fi
+
+		printf "\n\nPomodoro completed! Time for a break.\n\n"
+
+		if [ $(("${pom_count}" % "${POM_LONG_BREAK_FREQUENCY}")) -eq 0 ]; then
+		    s_long_break_alarm
+		else
+		    s_short_break_alarm
+		fi
+	    fi
+	    ;;
+
+	"short-break-alarm")
+	    if [ -f ~/.pom/on-short-break-alarm.sh ]; then
+		. ~/.pom/on-short-break-alarm.sh
+	    fi
+
+	    s_short_break
+	    ;;
+
+	"short-break")
+	    if [ -f ~/.pom/on-short-break-begin.sh ]; then
+		. ~/.pom/on-short-break-begin.sh
+	    fi
+
+	    while [ $? -eq 0 ] && [ "${pom_timer}" -gt 0 ]; do
+		pom_timer_msg=$(date -d@"${pom_timer}" -u +%M:%S)
+		pom_state_msg="Short Break [${pom_timer_msg}]"
+
+		if [ -f ~/.pom/on-short-break.sh ]; then
+		    . ~/.pom/on-short-break.sh
+		fi
+
+		printf "%s\033[0K\r" "${pom_state_msg}"
+
+		s_advance_timer
+
+		sleep 1;
+	    done
+
+	    if [ $? -eq 0 ]; then
+		if [ -f ~/.pom/on-short-break-end.sh ]; then
+		    . ~/.pom/on-short-break-end.sh
+		fi
+
+		printf "\n\nShort break finished. Ready for another pomodoro?\n\n"
+
+		s_idle
+	    fi
+	    ;;
+
+	"long-break-alarm")
+	    if [ -f ~/.pom/on-long-break-alarm.sh ]; then
+		. ~/.pom/on-long-break-alarm.sh
+	    fi
+
+	    s_long_break
+	    ;;
+
+	"long-break")
+	    if [ -f ~/.pom/on-long-break-begin.sh ]; then
+		. ~/.pom/on-long-break-begin.sh
+	    fi
+
+	    while [ $? -eq 0 ] && [ "${pom_timer}" -gt 0 ]; do
+		pom_timer_msg=$(date -d@"${pom_timer}" -u +%M:%S)
+		pom_state_msg="Long Break [${pom_timer_msg}]"
+
+		if [ -f ~/.pom/on-long-break.sh ]; then
+		    . ~/.pom/on-long-break.sh
+		fi
+
+		printf "%s\033[0K\r" "${pom_state_msg}"
+
+		s_advance_timer
+
+		sleep 1
+	    done
+
+	    if [ $? -eq 0 ]; then
+		if [ -f ~/.pom/on-long-break-end.sh ]; then
+		    . ~/.pom/on-long-break-end.sh
+		fi
+
+		printf "\n\nLong break finished. Ready for another pomodoro?\n\n"
+
+		s_idle
+	    fi
+	    ;;
+
+	*)
+	    printf "\n\error: invalid state: \"%s\"\n\n" "${pom_state}"
+	    exit 1
+	    ;;
+    esac
+done
